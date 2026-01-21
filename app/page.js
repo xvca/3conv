@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useRef, useEffect } from "react";
 
 const MODELS = [
   { id: "x-ai/grok-code-fast-1", name: "xAI: Grok Code Fast 1" },
@@ -16,6 +16,14 @@ export default function Home() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [file, setFile] = useState(null);
   const [prompt, setPrompt] = useState("");
+  const [status, setStatus] = useState(null);
+  const [statusType, setStatusType] = useState("normal");
+  const [downloadUrl, setDownloadUrl] = useState(null);
+  const [downloadName, setDownloadName] = useState(null);
+  const [ffmpegLoaded, setFfmpegLoaded] = useState(false);
+  const [isProcessing, setIsProcessing] = useState(false);
+
+  const ffmpegRef = useRef(null);
 
   useEffect(() => {
     const savedKey = localStorage.getItem("openrouter_api_key") || "";
@@ -34,18 +42,145 @@ export default function Home() {
     localStorage.setItem("openrouter_model", model);
   }, [model]);
 
+  useEffect(() => {
+    loadFFmpeg();
+  }, []);
+
+  const loadFFmpeg = async () => {
+    try {
+      const { FFmpeg } = await import("@ffmpeg/ffmpeg");
+      const { toBlobURL } = await import("@ffmpeg/util");
+
+      const ffmpeg = new FFmpeg();
+      ffmpegRef.current = ffmpeg;
+
+      const baseURL = "https://unpkg.com/@ffmpeg/core@0.12.10/dist/umd";
+      const coreURL = await toBlobURL(`${baseURL}/ffmpeg-core.js`, "text/javascript");
+      const wasmURL = await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, "application/wasm");
+
+      await ffmpeg.load({ coreURL, wasmURL });
+      setFfmpegLoaded(true);
+    } catch (err) {
+      setStatus("Failed to load FFmpeg");
+      setStatusType("error");
+    }
+  };
+
+  const generateCommand = async (userPrompt, filename) => {
+    const response = await fetch("/api/generate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        prompt: userPrompt,
+        filename,
+        model,
+        apiKey: apiKey || undefined,
+      }),
+    });
+
+    if (!response.ok) {
+      const data = await response.json();
+      throw new Error(data.error || "Failed to generate command");
+    }
+
+    const data = await response.json();
+    return data.command;
+  };
+
+  const processFile = async (commandObj) => {
+    const { fetchFile } = await import("@ffmpeg/util");
+
+    const ffmpeg = ffmpegRef.current;
+    const inputExt = file.name.split(".").pop().toLowerCase();
+    const inputName = `input.${inputExt}`;
+    const outputName = `output.${commandObj.outputExt}`;
+
+    const fileData = await fetchFile(file);
+    await ffmpeg.writeFile(inputName, fileData);
+
+    const args = commandObj.args.map((arg) =>
+      arg.match(/input\.[a-zA-Z0-9]+/)
+        ? arg.replace(/input\.[a-zA-Z0-9]+/, inputName)
+        : arg
+    );
+
+    await ffmpeg.exec(args);
+
+    const data = await ffmpeg.readFile(outputName);
+
+    await ffmpeg.deleteFile(inputName);
+    await ffmpeg.deleteFile(outputName);
+
+    const mimeTypes = {
+      mp4: "video/mp4",
+      webm: "video/webm",
+      mp3: "audio/mpeg",
+      wav: "audio/wav",
+      png: "image/png",
+      jpg: "image/jpeg",
+      gif: "image/gif",
+    };
+
+    const blob = new Blob([data], {
+      type: mimeTypes[commandObj.outputExt] || "application/octet-stream"
+    });
+
+    return blob;
+  };
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    if (!prompt.trim() || !file || !apiKey || isProcessing) return;
+
+    setIsProcessing(true);
+    setDownloadUrl(null);
+    setDownloadName(null);
+
+    try {
+      setStatus("Generating command...");
+      setStatusType("pulse");
+
+      const commandObj = await generateCommand(prompt, file.name);
+
+      setStatus("Processing file...");
+      const outputBlob = await processFile(commandObj);
+
+      const outputUrl = URL.createObjectURL(outputBlob);
+      const baseName = file.name.replace(/\.[^/.]+$/, "");
+      setDownloadUrl(outputUrl);
+      setDownloadName(`${baseName}_${commandObj.suffix}.${commandObj.outputExt}`);
+      setStatus("Done!");
+      setStatusType("success");
+    } catch (error) {
+      setStatus(`Error: ${error.message}`);
+      setStatusType("error");
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
   const handleFileChange = (e) => {
     const selectedFile = e.target.files?.[0];
     if (selectedFile) {
       setFile(selectedFile);
+      setDownloadUrl(null);
+      setDownloadName(null);
+      setStatus(null);
     }
   };
 
-  const handleSubmit = (e) => {
-    e.preventDefault();
-    if (!prompt.trim() || !file || !apiKey) return;
-    console.log("Processing", file.name, "with prompt:", prompt, "using model:", model);
-  };
+  if (!ffmpegLoaded) {
+    return (
+      <div className="app">
+        <div className="main-content">
+          <div className="title">
+            <h1>3conv</h1>
+            <p className="status">Loading...</p>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="app">
@@ -115,6 +250,24 @@ export default function Home() {
           <p>Convert media with natural language</p>
         </div>
 
+        {status && (
+          <div className={`status ${statusType === "pulse" ? "pulse" : ""} ${statusType}`}>
+            {status}
+          </div>
+        )}
+
+        {downloadUrl && (
+          <div className="result-area">
+            <a
+              href={downloadUrl}
+              download={downloadName}
+              className="download-link"
+            >
+              ⬇ Download {downloadName}
+            </a>
+          </div>
+        )}
+
         <form className="input-area" onSubmit={handleSubmit}>
           <div className="input-row">
             <label className="upload-label">
@@ -136,14 +289,14 @@ export default function Home() {
                     : "Attach a file to start..."
               }
               rows={1}
-              disabled={!apiKey}
+              disabled={!apiKey || isProcessing}
             />
             <button
               type="submit"
               className="send-btn"
-              disabled={!prompt.trim() || !file || !apiKey}
+              disabled={!prompt.trim() || !file || !apiKey || isProcessing}
             >
-              ↑
+              {isProcessing ? "..." : "↑"}
             </button>
           </div>
         </form>
