@@ -2,6 +2,7 @@
 
 import { useState, useRef, useEffect } from "react";
 import axios from "axios";
+import { motion, AnimatePresence } from "framer-motion";
 
 const MODELS = [
   { id: "x-ai/grok-code-fast-1", name: "xAI: Grok Code Fast 1" },
@@ -10,6 +11,30 @@ const MODELS = [
   { id: "anthropic/claude-sonnet-4.5", name: "Claude Sonnet 4.5" },
   { id: "google/gemini-3-flash-preview", name: "Gemeni 3 Flash Preview" },
 ];
+
+const fadeInUp = {
+  initial: { opacity: 0, y: 12 },
+  animate: { opacity: 1, y: 0 },
+  exit: { opacity: 0, y: -8 },
+};
+
+const slideDown = {
+  initial: { opacity: 0, y: -8, scale: 0.96 },
+  animate: { opacity: 1, y: 0, scale: 1 },
+  exit: { opacity: 0, y: -8, scale: 0.96 },
+};
+
+const smooth = {
+  type: "tween",
+  ease: [0.33, 1, 0.68, 1],
+  duration: 0.25,
+};
+
+const spring = {
+  type: "spring",
+  stiffness: 400,
+  damping: 30,
+};
 
 export default function Home() {
   const [apiKey, setApiKey] = useState("");
@@ -169,10 +194,15 @@ export default function Home() {
     return (
       <div className="app">
         <div className="main-content">
-          <div className="title">
+          <motion.div
+            className="title"
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.5, ease: [0.33, 1, 0.68, 1] }}
+          >
             <h1>3conv</h1>
             <p className="status">Loading...</p>
-          </div>
+          </motion.div>
         </div>
       </div>
     );
@@ -180,91 +210,140 @@ export default function Home() {
 
   return (
     <div className="app">
-      <header className="header">
+      <motion.header
+        className="header"
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        transition={{ delay: 0.1, duration: 0.4 }}
+      >
         <div className="settings">
-          <button
+          <motion.button
             className="settings-btn"
             onClick={() => setSettingsOpen(!settingsOpen)}
+            whileHover={{ scale: 1.05 }}
+            whileTap={{ scale: 0.95 }}
           >
             ⚙
-          </button>
-          {settingsOpen && (
-            <>
-              <div
-                className="settings-overlay"
-                onClick={() => setSettingsOpen(false)}
-              />
-              <form
-                className="settings-dropdown"
-                onSubmit={(e) => e.preventDefault()}
-                autoComplete="off"
-              >
-                <label htmlFor="api-key-input">OpenRouter API Key</label>
-                <input
-                  id="api-key-input"
-                  type="password"
-                  value={apiKey}
-                  onChange={(e) => setApiKey(e.target.value)}
-                  placeholder="sk-or-..."
-                  autoComplete="off"
+          </motion.button>
+          <AnimatePresence>
+            {settingsOpen && (
+              <>
+                <motion.div
+                  className="settings-overlay"
+                  onClick={() => setSettingsOpen(false)}
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  exit={{ opacity: 0 }}
+                  transition={{ duration: 0.15 }}
                 />
-                <small>
-                  Required. Stored locally in browser.{" "}
-                  <a
-                    href="https://openrouter.ai/keys"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                  >
-                    Get your own key
-                  </a>{" "}
-                  for unlimited use.
-                </small>
-
-                <label htmlFor="model-select" style={{ marginTop: "1rem" }}>
-                  Model
-                </label>
-                <select
-                  id="model-select"
-                  value={model}
-                  onChange={(e) => setModel(e.target.value)}
+                <motion.form
+                  className="settings-dropdown"
+                  onSubmit={(e) => e.preventDefault()}
+                  autoComplete="off"
+                  variants={slideDown}
+                  initial="initial"
+                  animate="animate"
+                  exit="exit"
+                  transition={spring}
                 >
-                  {MODELS.map((m) => (
-                    <option key={m.id} value={m.id}>
-                      {m.name}
-                    </option>
-                  ))}
-                </select>
-              </form>
-            </>
-          )}
+                  <label htmlFor="api-key-input">OpenRouter API Key</label>
+                  <input
+                    id="api-key-input"
+                    type="password"
+                    value={apiKey}
+                    onChange={(e) => setApiKey(e.target.value)}
+                    placeholder="sk-or-..."
+                    autoComplete="off"
+                  />
+                  <small>
+                    Required. Stored locally in browser.{" "}
+                    <a
+                      href="https://openrouter.ai/keys"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                    >
+                      Get your own key
+                    </a>{" "}
+                    for unlimited use.
+                  </small>
+
+                  <label htmlFor="model-select" style={{ marginTop: "1rem" }}>
+                    Model
+                  </label>
+                  <select
+                    id="model-select"
+                    value={model}
+                    onChange={(e) => setModel(e.target.value)}
+                  >
+                    {MODELS.map((m) => (
+                      <option key={m.id} value={m.id}>
+                        {m.name}
+                      </option>
+                    ))}
+                  </select>
+                </motion.form>
+              </>
+            )}
+          </AnimatePresence>
         </div>
-      </header>
+      </motion.header>
 
       <div className="main-content">
-        <div className="title">
+        <motion.div
+          className="title"
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.5, ease: [0.33, 1, 0.68, 1] }}
+        >
           <h1>3conv</h1>
           <p>Convert media with natural language</p>
-        </div>
+        </motion.div>
 
-        {status && (
-          <div className={`status ${statusType === "pulse" ? "pulse" : ""} ${statusType}`}>
-            {status}
-          </div>
-        )}
-
-        {downloadUrl && (
-          <div className="result-area">
-            <a
-              href={downloadUrl}
-              download={downloadName}
-              className="download-link"
+        <AnimatePresence mode="wait">
+          {status && (
+            <motion.div
+              key={status}
+              className={`status ${statusType === "pulse" ? "pulse" : ""} ${statusType}`}
+              variants={fadeInUp}
+              initial="initial"
+              animate="animate"
+              exit="exit"
+              transition={smooth}
             >
-              ⬇ Download {downloadName}
-            </a>
-          </div>
-        )}
+              {status}
+            </motion.div>
+          )}
+        </AnimatePresence>
 
-        <form className="input-area" onSubmit={handleSubmit}>
+        <AnimatePresence>
+          {downloadUrl && (
+            <motion.div
+              className="result-area"
+              initial={{ opacity: 0, scale: 0.92 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.92 }}
+              transition={spring}
+            >
+              <motion.a
+                href={downloadUrl}
+                download={downloadName}
+                className="download-link"
+                whileHover={{ scale: 1.02, y: -1 }}
+                whileTap={{ scale: 0.98 }}
+              >
+                ⬇ Download {downloadName}
+              </motion.a>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        <motion.form
+          className="input-area"
+          onSubmit={handleSubmit}
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.2, duration: 0.5, ease: [0.33, 1, 0.68, 1] }}
+        >
           <div className="input-row">
             <label className="upload-label">
               📎
@@ -287,15 +366,17 @@ export default function Home() {
               rows={1}
               disabled={!apiKey || isProcessing}
             />
-            <button
+            <motion.button
               type="submit"
               className="send-btn"
               disabled={!prompt.trim() || !file || !apiKey || isProcessing}
+              whileHover={{ scale: 1.05 }}
+              whileTap={{ scale: 0.95 }}
             >
               {isProcessing ? "..." : "↑"}
-            </button>
+            </motion.button>
           </div>
-        </form>
+        </motion.form>
       </div>
     </div>
   );
