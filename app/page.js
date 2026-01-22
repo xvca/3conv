@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
+import axios from "axios";
 
 const MODELS = [
   { id: "x-ai/grok-code-fast-1", name: "xAI: Grok Code Fast 1" },
@@ -67,24 +68,19 @@ export default function Home() {
   };
 
   const generateCommand = async (userPrompt, filename) => {
-    const response = await fetch("/api/generate", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
+    try {
+      const { data } = await axios.post("/api/generate", {
         prompt: userPrompt,
         filename,
         model,
         apiKey: apiKey || undefined,
-      }),
-    });
+      });
 
-    if (!response.ok) {
-      const data = await response.json();
-      throw new Error(data.error || "Failed to generate command");
+      return data.command;
+    } catch (err) {
+      const message = err.response?.data?.error || "Failed to generate command";
+      throw new Error(message);
     }
-
-    const data = await response.json();
-    return data.command;
   };
 
   const processFile = async (commandObj) => {
