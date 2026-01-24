@@ -36,6 +36,18 @@ const spring = {
   damping: 30,
 };
 
+const SUPPORTED_FORMATS = {
+  video: ["mp4", "webm", "avi", "mov", "mkv", "flv", "wmv", "m4v", "mpeg", "mpg", "3gp", "ogv"],
+  audio: ["mp3", "wav", "ogg", "flac", "aac", "m4a", "wma", "opus"],
+  image: ["gif", "png", "jpg", "jpeg", "webp", "bmp", "tiff"],
+};
+
+const ALL_SUPPORTED = [
+  ...SUPPORTED_FORMATS.video,
+  ...SUPPORTED_FORMATS.audio,
+  ...SUPPORTED_FORMATS.image,
+];
+
 export default function Home() {
   const [apiKey, setApiKey] = useState("");
   const [model, setModel] = useState(MODELS[0].id);
@@ -117,6 +129,11 @@ export default function Home() {
     const outputName = `output.${commandObj.outputExt}`;
 
     const fileData = await fetchFile(file);
+
+    if (fileData.byteLength === 0) {
+      throw new Error("File is empty. Please select a valid file.");
+    }
+
     await ffmpeg.writeFile(inputName, fileData);
 
     const args = commandObj.args.map((arg) =>
@@ -125,9 +142,17 @@ export default function Home() {
         : arg
     );
 
-    await ffmpeg.exec(args);
+    try {
+      await ffmpeg.exec(args);
+    } catch (err) {
+      throw new Error("Conversion failed. The file may use an unsupported codec.");
+    }
 
     const data = await ffmpeg.readFile(outputName);
+
+    if (!data || data.length === 0) {
+      throw new Error("Conversion produced no output. The file may use an unsupported codec.");
+    }
 
     await ffmpeg.deleteFile(inputName);
     await ffmpeg.deleteFile(outputName);
@@ -140,6 +165,9 @@ export default function Home() {
       png: "image/png",
       jpg: "image/jpeg",
       gif: "image/gif",
+      ogg: "audio/ogg",
+      avi: "video/avi",
+      mov: "video/quicktime",
     };
 
     const blob = new Blob([data], {
@@ -183,6 +211,13 @@ export default function Home() {
   const handleFileChange = (e) => {
     const selectedFile = e.target.files?.[0];
     if (selectedFile) {
+      const ext = selectedFile.name.split(".").pop().toLowerCase();
+      if (!ALL_SUPPORTED.includes(ext)) {
+        setStatus(`Unsupported format: .${ext}. Try mp4, mp3, gif, or other common formats.`);
+        setStatusType("error");
+        e.target.value = "";
+        return;
+      }
       setFile(selectedFile);
       setDownloadUrl(null);
       setDownloadName(null);
