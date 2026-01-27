@@ -1,5 +1,3 @@
-import './globals.css'
-
 export const metadata = {
   title: '3conv',
   description: 'Convert media with natural language',

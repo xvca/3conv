@@ -1,30 +1,28 @@
 # 3conv
 
-Browser-based media converter using FFmpeg.wasm and natural language commands.
+A web app that converts media files using plain English. Upload a video, audio file, or image, type what you want ("make this a gif", "extract the audio", "compress this"), and it runs the right FFmpeg command.
 
-## What it does
+The conversion happens in browser. The file never leaves your machine.
 
-Upload a video, audio, or image file. Describe what you want to do in plain English. The app generates the FFmpeg command and runs it in your browser.
+## How it works
+
+1. You upload a file and describe what you want
+2. An LLM figures out the FFmpeg command
+3. FFmpeg.wasm runs it client-side
+4. You download the result
 
 ## Setup
 
-Install dependencies:
 ```bash
+nvm use 20
 npm install
-```
-
-Run locally:
-```bash
 npm run dev
 ```
 
-Open http://localhost:3000
-
-Add your OpenRouter API key in settings (or set `OPENROUTER_API_KEY` in `.env.local` for server-side free credits).
+You'll need an OpenRouter API key. Either set `OPENROUTER_API_KEY` in `.env.local` or paste your key in the settings menu.
 
 ## Tech
 
-- Next.js 16 + React 19
-- FFmpeg.wasm for client-side media processing
-- OpenRouter API for natural language → FFmpeg translation
-- Framer Motion for animations
+- Next.js
+- FFmpeg.wasm (runs in browser via WebAssembly)
+- OpenRouter for the LLM calls
