@@ -28,6 +28,7 @@ export async function POST(request) {
   try {
     const { prompt, filename, model, apiKey: userApiKey } = await request.json()
 
+    // Use user's API key if provided, otherwise use server key
     const apiKey = userApiKey || process.env.OPENROUTER_API_KEY
 
     if (!apiKey) {
@@ -78,6 +79,7 @@ export async function POST(request) {
           errorMessage = errorData.error.message
         }
       } catch {
+        // Couldn't parse error, use default message
       }
 
       return Response.json(
@@ -89,6 +91,7 @@ export async function POST(request) {
     const data = await response.json()
     const content = data.choices[0].message.content
 
+    // Parse JSON from response
     const jsonMatch = content.match(/\{[\s\S]*\}/)
     if (!jsonMatch) {
       return Response.json(
