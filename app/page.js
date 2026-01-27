@@ -60,6 +60,7 @@ export default function Home() {
   const [downloadName, setDownloadName] = useState(null);
   const [ffmpegLoaded, setFfmpegLoaded] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [hasServerKey, setHasServerKey] = useState(null);
 
   const ffmpegRef = useRef(null);
 
@@ -68,6 +69,11 @@ export default function Home() {
     const savedModel = localStorage.getItem("openrouter_model") || MODELS[0].id;
     setApiKey(savedKey);
     setModel(savedModel);
+
+    axios
+      .get("/api/status")
+      .then((res) => setHasServerKey(res.data.hasServerKey))
+      .catch(() => setHasServerKey(false));
   }, []);
 
   useEffect(() => {
@@ -179,7 +185,7 @@ export default function Home() {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    if (!prompt.trim() || !file || !apiKey || isProcessing) return;
+    if (!prompt.trim() || !file || (!apiKey && !hasServerKey) || isProcessing) return;
 
     setIsProcessing(true);
     setDownloadUrl(null);
@@ -287,11 +293,13 @@ export default function Home() {
                     type="password"
                     value={apiKey}
                     onChange={(e) => setApiKey(e.target.value)}
-                    placeholder="sk-or-..."
+                    placeholder={hasServerKey ? "(using free credits)" : "sk-or-..."}
                     autoComplete="off"
                   />
                   <small>
-                    Required. Stored locally in browser.{" "}
+                    {hasServerKey
+                      ? "Optional. Free credits reset daily."
+                      : "Required. Stored locally in browser."}{" "}
                     <a
                       href="https://openrouter.ai/keys"
                       target="_blank"
@@ -332,6 +340,19 @@ export default function Home() {
         >
           <h1>3conv</h1>
           <p>Convert media with natural language</p>
+          <AnimatePresence>
+            {hasServerKey && !apiKey && (
+              <motion.p
+                className="credits-note"
+                initial={{ opacity: 0, height: 0 }}
+                animate={{ opacity: 1, height: "auto" }}
+                exit={{ opacity: 0, height: 0 }}
+                transition={smooth}
+              >
+                Free credits available daily
+              </motion.p>
+            )}
+          </AnimatePresence>
         </motion.div>
 
         <AnimatePresence mode="wait">
@@ -392,19 +413,27 @@ export default function Home() {
               value={prompt}
               onChange={(e) => setPrompt(e.target.value)}
               placeholder={
-                !apiKey
-                  ? "Add your API key in settings..."
-                  : file
-                    ? "What do you want to do?"
-                    : "Attach a file to start..."
+                hasServerKey === null
+                  ? "Loading..."
+                  : !apiKey && !hasServerKey
+                    ? "Add your API key in settings..."
+                    : file
+                      ? "What do you want to do?"
+                      : "Attach a file to start..."
               }
               rows={1}
-              disabled={!apiKey || isProcessing}
+              disabled={hasServerKey === null || (!apiKey && !hasServerKey) || isProcessing}
             />
             <motion.button
               type="submit"
               className="send-btn"
-              disabled={!prompt.trim() || !file || !apiKey || isProcessing}
+              disabled={
+                hasServerKey === null ||
+                !prompt.trim() ||
+                !file ||
+                (!apiKey && !hasServerKey) ||
+                isProcessing
+              }
               whileHover={{ scale: 1.05 }}
               whileTap={{ scale: 0.95 }}
             >
