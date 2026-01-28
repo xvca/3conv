@@ -6,11 +6,11 @@ import { motion, AnimatePresence, LayoutGroup } from "framer-motion";
 import "./globals.css";
 
 const MODELS = [
-  { id: "x-ai/grok-code-fast-1", name: "xAI: Grok Code Fast 1" },
+  { id: "google/gemini-3-flash-preview", name: "Gemeni 3 Flash Preview" },
+  { id: "anthropic/claude-sonnet-4.5", name: "Claude Sonnet 4.5" },
   { id: "deepseek/deepseek-v3.2", name: "DeepSeek v3.2" },
   { id: "z-ai/glm-4.7-flash", name: "Z.AI: GLM 4.7 Flash" },
-  { id: "anthropic/claude-sonnet-4.5", name: "Claude Sonnet 4.5" },
-  { id: "google/gemini-3-flash-preview", name: "Gemeni 3 Flash Preview" },
+  { id: "x-ai/grok-code-fast-1", name: "xAI: Grok Code Fast 1" },
 ];
 
 const SUPPORTED_FORMATS = {
@@ -113,6 +113,20 @@ const smooth = {
   duration: 0.25,
 };
 
+const EXAMPLE_PROMPTS = [
+  "convert to gif",
+  "extract the audio as mp3",
+  "compress",
+  "trim to first 10 seconds",
+  "rotate 90 degrees clockwise",
+  "convert to grayscale",
+  "speed up 2x",
+  "crop to square",
+  "remove audio",
+  "convert to webm",
+  "remove 1:45-2:00",
+];
+
 export default function Home() {
   const [apiKey, setApiKey] = useState("");
   const [model, setModel] = useState(MODELS[0].id);
@@ -129,6 +143,8 @@ export default function Home() {
   const [ffmpegLoaded, setFfmpegLoaded] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
   const [hasServerKey, setHasServerKey] = useState(null);
+  const [placeholderIndex, setPlaceholderIndex] = useState(0);
+  const [placeholderFading, setPlaceholderFading] = useState(false);
 
   const ffmpegRef = useRef(null);
   const ffmpegLogsRef = useRef([]);
@@ -184,6 +200,19 @@ export default function Home() {
       document.removeEventListener("keydown", handleEscape);
     };
   }, [settingsOpen]);
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setPlaceholderFading(true);
+
+      setTimeout(() => {
+        setPlaceholderIndex((prev) => (prev + 1) % EXAMPLE_PROMPTS.length);
+        setPlaceholderFading(false);
+      }, 500);
+    }, 3000);
+
+    return () => clearInterval(interval);
+  }, []);
 
   const loadFFmpeg = async () => {
     try {
@@ -781,6 +810,7 @@ export default function Home() {
               </label>
               <textarea
                 ref={textareaRef}
+                className={placeholderFading ? "placeholder-fade" : ""}
                 value={prompt}
                 onChange={handleTextareaChange}
                 onKeyDown={handleKeyDown}
@@ -789,9 +819,7 @@ export default function Home() {
                     ? "Loading..."
                     : !canSubmit
                       ? "Add your API key in settings..."
-                      : file
-                        ? "What do you want to do?"
-                        : "Attach a file to start..."
+                      : EXAMPLE_PROMPTS[placeholderIndex]
                 }
                 rows={1}
                 disabled={isCheckingKey || !canSubmit || isProcessing}
