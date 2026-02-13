@@ -6,10 +6,18 @@ Available codecs in FFmpeg.wasm:
 - Image: gif (with palettegen/paletteuse), libwebp
 - Subtitles: libass (srt, ass)
 
-Common filters: scale, crop, trim, setpts, fps, reverse, hflip, vflip, transpose, rotate, colorchannelmixer, eq, hue, volume, atempo, adelay, afade, drawtext
+Common filters: scale, crop, trim, setpts, fps, reverse, hflip, vflip, transpose, rotate, colorchannelmixer, eq, hue, volume, atempo, adelay, afade, drawtext, overlay, concat
 
-Input file: "input.{ext}"
-Output file: "output.{ext}"
+For single file operations:
+- Input file: "input.{ext}"
+- Output file: "output.{ext}"
+
+For multi-file operations (e.g., combining image + audio to create video):
+- Input files: "input0.{ext}", "input1.{ext}", etc.
+- Use -loop 1 for static images
+- Use -i for each input file
+- Use filter_complex for combining streams (e.g., overlay, concat)
+- Example: ["-loop", "1", "-i", "input0.png", "-i", "input1.mp3", "-shortest", "-c:v", "libx264", "-c:a", "aac", "output.mp4"]
 
 Preserve original format unless user asks to convert.
 
@@ -20,15 +28,14 @@ JSON format:
   "suffix": "descriptor"
 }
 
-Suffix: short descriptor like grayscale, compressed, trimmed, resized, converted, slow, fast, muted, reversed, rotated
+Suffix: short descriptor like grayscale, compressed, trimmed, resized, converted, slow, fast, muted, reversed, rotated, combined
 
 No "ffmpeg" prefix. No explanation. Just valid JSON.`
 
 export async function POST(request) {
   try {
-    const { prompt, filename, model, apiKey: userApiKey } = await request.json()
+    const { prompt, filenames, model, apiKey: userApiKey } = await request.json()
 
-    // Use user's API key if provided, otherwise use server key
     const apiKey = userApiKey || process.env.OPENROUTER_API_KEY
 
     if (!apiKey) {
@@ -37,6 +44,11 @@ export async function POST(request) {
         { status: 401 }
       )
     }
+
+    const fileList = Array.isArray(filenames) ? filenames : [filenames];
+    const fileContext = fileList.length === 1
+      ? `File: ${fileList[0]}`
+      : `Files: ${fileList.join(', ')}`;
 
     const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
       method: 'POST',
@@ -49,7 +61,7 @@ export async function POST(request) {
         max_tokens: 500,
         messages: [
           { role: 'system', content: SYSTEM_PROMPT },
-          { role: 'user', content: `File: ${filename}\nRequest: ${prompt}` }
+          { role: 'user', content: `${fileContext}\nRequest: ${prompt}` }
         ],
       }),
     })

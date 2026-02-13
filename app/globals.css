@@ -289,6 +289,13 @@ body {
     box-shadow: 0 2px 12px rgba(0, 0, 0, 0.06);
 }
 
+.file-chips-container {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    width: 100%;
+}
+
 .file-chip {
     display: inline-flex;
     justify-content: space-between;
@@ -503,4 +510,38 @@ body {
         transform: translateY(-4px);
         opacity: 1;
     }
+}
+
+.drag-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(250, 248, 245, 0.95);
+    backdrop-filter: blur(8px);
+    z-index: 1000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    pointer-events: none;
+}
+
+.drag-overlay-content {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 1rem;
+    padding: 3rem;
+    border: 2px dashed var(--border);
+    border-radius: 16px;
+    background: white;
+}
+
+.drag-icon {
+    font-size: 4rem;
+    opacity: 0.8;
+}
+
+.drag-text {
+    font-size: 1.5rem;
+    color: var(--text-light);
+    font-weight: 500;
 }

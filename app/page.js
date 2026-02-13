@@ -125,13 +125,14 @@ const EXAMPLE_PROMPTS = [
   "remove audio",
   "convert to webm",
   "remove 1:45-2:00",
+  "combine image and audio into video",
 ];
 
 export default function Home() {
   const [apiKey, setApiKey] = useState("");
   const [model, setModel] = useState(MODELS[0].id);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [file, setFile] = useState(null);
+  const [files, setFiles] = useState([]);
   const [prompt, setPrompt] = useState("");
   const [status, setStatus] = useState(null);
   const [statusType, setStatusType] = useState("normal");
@@ -145,6 +146,7 @@ export default function Home() {
   const [hasServerKey, setHasServerKey] = useState(null);
   const [placeholderIndex, setPlaceholderIndex] = useState(0);
   const [placeholderFading, setPlaceholderFading] = useState(false);
+  const [isDragging, setIsDragging] = useState(false);
 
   const ffmpegRef = useRef(null);
   const ffmpegLogsRef = useRef([]);
@@ -214,6 +216,120 @@ export default function Home() {
     return () => clearInterval(interval);
   }, []);
 
+  useEffect(() => {
+    const handlePaste = (e) => {
+      if (isProcessing) return;
+
+      const items = e.clipboardData?.items;
+      if (!items) return;
+
+      for (let i = 0; i < items.length; i++) {
+        const item = items[i];
+
+        if (item.kind === 'file' && item.type.startsWith('image/')) {
+          e.preventDefault();
+
+          const pastedFile = item.getAsFile();
+          if (!pastedFile) continue;
+
+          const ext = pastedFile.type.split('/')[1];
+          const timestamp = Date.now();
+          const renamedFile = new File(
+            [pastedFile],
+            `pasted-image-${timestamp}.${ext}`,
+            { type: pastedFile.type }
+          );
+
+          console.log('[Clipboard] Pasted image:', renamedFile.name, renamedFile.size, 'bytes');
+
+          if (!SUPPORTED_FORMATS.image.includes(ext)) {
+            setStatus(`Unsupported image format: ${ext}`);
+            setStatusType('error');
+            return;
+          }
+
+          setFiles((prev) => [...prev, renamedFile]);
+          setDownloadUrl(null);
+          setDownloadName(null);
+          setCommand(null);
+          setCost(null);
+          setStatus(null);
+
+          break;
+        }
+      }
+    };
+
+    document.addEventListener('paste', handlePaste);
+    return () => document.removeEventListener('paste', handlePaste);
+  }, [isProcessing]);
+
+  useEffect(() => {
+    const handleDragOver = (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (!isProcessing && !isDragging) {
+        setIsDragging(true);
+      }
+    };
+
+    const handleDragLeave = (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.target === document.body || e.target === document.documentElement) {
+        setIsDragging(false);
+      }
+    };
+
+    const handleDrop = (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      setIsDragging(false);
+
+      if (isProcessing) return;
+
+      const droppedFiles = Array.from(e.dataTransfer?.files || []);
+      if (droppedFiles.length === 0) return;
+
+      const validFiles = [];
+      for (const droppedFile of droppedFiles) {
+        console.log('[DragDrop] Dropped file:', droppedFile.name, droppedFile.size, 'bytes');
+
+        const ext = getFileExtension(droppedFile.name);
+        const fileType = getFileType(ext);
+
+        if (!fileType) {
+          setStatus(
+            `Unsupported format: .${ext}. Try ${SUPPORTED_FORMATS.video.slice(0, 3).join(", ")} for video, ${SUPPORTED_FORMATS.audio.slice(0, 3).join(", ")} for audio, or ${SUPPORTED_FORMATS.image.slice(0, 3).join(", ")} for images.`,
+          );
+          setStatusType('error');
+          return;
+        }
+
+        validFiles.push(droppedFile);
+      }
+
+      if (validFiles.length > 0) {
+        setFiles((prev) => [...prev, ...validFiles]);
+        setDownloadUrl(null);
+        setDownloadName(null);
+        setCommand(null);
+        setCost(null);
+        setStatus(null);
+      }
+    };
+
+    document.addEventListener('dragover', handleDragOver);
+    document.addEventListener('dragleave', handleDragLeave);
+    document.addEventListener('drop', handleDrop);
+
+    return () => {
+      document.removeEventListener('dragover', handleDragOver);
+      document.removeEventListener('dragleave', handleDragLeave);
+      document.removeEventListener('drop', handleDrop);
+    };
+  }, [isProcessing, isDragging]);
+
   const loadFFmpeg = async () => {
     try {
       console.log("[FFmpeg] Loading...");
@@ -261,17 +377,17 @@ export default function Home() {
     return filename.split(".").pop().toLowerCase();
   };
 
-  const generateCommand = async (userPrompt, filename) => {
+  const generateCommand = async (userPrompt, filenames) => {
     console.log("[API] Generating command for:", {
       userPrompt,
-      filename,
+      filenames,
       model,
     });
 
     try {
       const { data } = await axios.post("/api/generate", {
         prompt: userPrompt,
-        filename,
+        filenames,
         model,
         apiKey: apiKey || undefined,
       });
@@ -290,44 +406,57 @@ export default function Home() {
     }
   };
 
-  const processFile = async (commandObj) => {
+  const processFiles = async (commandObj) => {
     const { fetchFile } = await import("@ffmpeg/util");
 
     ffmpegLogsRef.current = [];
 
     const ffmpeg = ffmpegRef.current;
-    const inputExt = getFileExtension(file.name);
-    const inputName = `input.${inputExt}`;
     const outputName = `output.${commandObj.outputExt}`;
 
-    if (!ALL_SUPPORTED.includes(inputExt)) {
-      throw new Error(
-        `Unsupported file format: .${inputExt}. Supported formats: ${ALL_SUPPORTED.join(", ")}`,
-      );
+    const inputNames = [];
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      const inputExt = getFileExtension(file.name);
+
+      if (!ALL_SUPPORTED.includes(inputExt)) {
+        throw new Error(
+          `Unsupported file format: .${inputExt}. Supported formats: ${ALL_SUPPORTED.join(", ")}`,
+        );
+      }
+
+      const inputName = files.length === 1 ? `input.${inputExt}` : `input${i}.${inputExt}`;
+      inputNames.push(inputName);
+
+      console.log(`[Process] Input file ${i}:`, inputName);
+
+      const fileData = await fetchFile(file);
+      console.log(`[Process] Input file ${i} size:`, fileData.byteLength, "bytes");
+
+      if (fileData.byteLength === 0) {
+        throw new Error(`File ${file.name} is empty. Please select valid files.`);
+      }
+
+      await ffmpeg.writeFile(inputName, fileData);
     }
 
-    console.log("[Process] Input file:", inputName);
     console.log("[Process] Output file:", outputName);
     console.log("[Process] Command args:", commandObj.args);
-
-    const fileData = await fetchFile(file);
-    console.log("[Process] Input file size:", fileData.byteLength, "bytes");
-
-    if (fileData.byteLength === 0) {
-      throw new Error("File is empty. Please select a valid file.");
-    }
-
-    await ffmpeg.writeFile(inputName, fileData);
 
     const filesBefore = await ffmpeg.listDir("/");
     console.log("[Process] Files before exec:", filesBefore);
 
-    const args = commandObj.args.map((arg) => {
-      if (arg.match(/input\.[a-zA-Z0-9]+/)) {
-        return arg.replace(/input\.[a-zA-Z0-9]+/, inputName);
-      }
-      return arg;
-    });
+    let args = commandObj.args;
+    if (files.length === 1) {
+      const inputExt = getFileExtension(files[0].name);
+      const inputName = `input.${inputExt}`;
+      args = args.map((arg) => {
+        if (arg.match(/input\.[a-zA-Z0-9]+/)) {
+          return arg.replace(/input\.[a-zA-Z0-9]+/, inputName);
+        }
+        return arg;
+      });
+    }
     console.log("[Process] Final args:", args);
 
     console.log("[Process] Executing FFmpeg...");
@@ -375,7 +504,9 @@ export default function Home() {
     }
 
     try {
-      await ffmpeg.deleteFile(inputName);
+      for (const inputName of inputNames) {
+        await ffmpeg.deleteFile(inputName);
+      }
       await ffmpeg.deleteFile(outputName);
       console.log("[Process] Cleanup complete");
     } catch (err) {
@@ -422,7 +553,7 @@ export default function Home() {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    if (!prompt.trim() || !file || !canSubmit || isProcessing) return;
+    if (!prompt.trim() || files.length === 0 || !canSubmit || isProcessing) return;
 
     setIsProcessing(true);
     setDownloadUrl(null);
@@ -431,31 +562,54 @@ export default function Home() {
     setCost(null);
     setProgress(0);
 
+    const maxAttempts = 3;
+    let lastError = null;
+    let success = false;
+
     try {
-      setStatus("Generating command...");
-      setStatusType("pulse");
+      for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        try {
+          setStatus(
+            attempt === 1
+              ? "Generating command..."
+              : `Retrying (${attempt}/${maxAttempts})...`
+          );
+          setStatusType("pulse");
 
-      const commandObj = await generateCommand(prompt, file.name);
-      setCommand(`ffmpeg ${commandObj.args.join(" ")}`);
+          const filenames = files.map(f => f.name);
+          const commandObj = await generateCommand(prompt, filenames);
+          setCommand(`ffmpeg ${commandObj.args.join(" ")}`);
 
-      setStatus("Processing file...");
-      const outputBlob = await processFile(commandObj);
+          setStatus(files.length > 1 ? "Processing files..." : "Processing file...");
+          const outputBlob = await processFiles(commandObj);
 
-      if (outputBlob.size === 0) {
-        throw new Error("Output file is empty - FFmpeg may have failed");
+          if (outputBlob.size === 0) {
+            throw new Error("Output file is empty - FFmpeg may have failed");
+          }
+
+          const outputUrl = URL.createObjectURL(outputBlob);
+          setDownloadUrl(outputUrl);
+          setDownloadName(
+            getOutputFilename(files[0].name, commandObj.outputExt, commandObj.suffix),
+          );
+          setStatus("Done!");
+          setStatusType("success");
+          success = true;
+          break;
+        } catch (error) {
+          console.error(`[Error] Attempt ${attempt}/${maxAttempts}:`, error);
+          lastError = error;
+
+          if (attempt < maxAttempts) {
+            await new Promise(resolve => setTimeout(resolve, 500));
+          }
+        }
       }
 
-      const outputUrl = URL.createObjectURL(outputBlob);
-      setDownloadUrl(outputUrl);
-      setDownloadName(
-        getOutputFilename(file.name, commandObj.outputExt, commandObj.suffix),
-      );
-      setStatus("Done!");
-      setStatusType("success");
-    } catch (error) {
-      console.error("[Error]", error);
-      setStatus(`Error: ${error.message}`);
-      setStatusType("error");
+      if (!success && lastError) {
+        setStatus(`Error: ${lastError.message}`);
+        setStatusType("error");
+      }
     } finally {
       setIsProcessing(false);
       setProgress(0);
@@ -463,8 +617,11 @@ export default function Home() {
   };
 
   const handleFileChange = (e) => {
-    const selectedFile = e.target.files?.[0];
-    if (selectedFile) {
+    const selectedFiles = Array.from(e.target.files || []);
+    if (selectedFiles.length === 0) return;
+
+    const validFiles = [];
+    for (const selectedFile of selectedFiles) {
       console.log(
         "[File] Selected:",
         selectedFile.name,
@@ -485,17 +642,20 @@ export default function Home() {
         return;
       }
 
-      setFile(selectedFile);
-      setDownloadUrl(null);
-      setDownloadName(null);
-      setCommand(null);
-      setCost(null);
-      setStatus(null);
+      validFiles.push(selectedFile);
     }
+
+    setFiles((prev) => [...prev, ...validFiles]);
+    setDownloadUrl(null);
+    setDownloadName(null);
+    setCommand(null);
+    setCost(null);
+    setStatus(null);
+    e.target.value = "";
   };
 
-  const removeFile = () => {
-    setFile(null);
+  const removeFile = (index) => {
+    setFiles(files.filter((_, i) => i !== index));
     setDownloadUrl(null);
     setDownloadName(null);
     setCommand(null);
@@ -512,7 +672,7 @@ export default function Home() {
   const handleKeyDown = (e) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
-      if (prompt.trim() && file && canSubmit && ffmpegLoaded && !isProcessing) {
+      if (prompt.trim() && files.length > 0 && canSubmit && ffmpegLoaded && !isProcessing) {
         handleSubmit(e);
       }
     }
@@ -545,6 +705,22 @@ export default function Home() {
 
   return (
     <div className="app">
+      <AnimatePresence>
+        {isDragging && (
+          <motion.div
+            className="drag-overlay"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.2 }}
+          >
+            <div className="drag-overlay-content">
+              <div className="drag-icon">📁</div>
+              <div className="drag-text">Drop files here</div>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
       <motion.header
         className="header"
         initial={{ opacity: 0 }}
@@ -770,35 +946,48 @@ export default function Home() {
             layout
           >
             <AnimatePresence>
-              {file && (
+              {files.length > 0 && (
                 <motion.div
-                  className="file-chip"
-                  initial={{ opacity: 0, scale: 0.8, height: 0 }}
-                  animate={{ opacity: 1, scale: 1, height: "auto" }}
-                  exit={{ opacity: 0, scale: 0.8, height: 0 }}
+                  className="file-chips-container"
+                  initial={{ opacity: 0, height: 0 }}
+                  animate={{ opacity: 1, height: "auto" }}
+                  exit={{ opacity: 0, height: 0 }}
                   transition={spring}
                   layout
                 >
-                  <span>{file.name}</span>
-                  <motion.button
-                    type="button"
-                    onClick={removeFile}
-                    aria-label={`Remove ${file.name}`}
-                    whileHover={{
-                      scale: 1.1,
-                      backgroundColor: "rgba(0,0,0,0.1)",
-                    }}
-                    whileTap={{ scale: 0.9 }}
-                  >
-                    ×
-                  </motion.button>
+                  {files.map((file, index) => (
+                    <motion.div
+                      key={`${file.name}-${index}`}
+                      className="file-chip"
+                      initial={{ opacity: 0, scale: 0.8 }}
+                      animate={{ opacity: 1, scale: 1 }}
+                      exit={{ opacity: 0, scale: 0.8 }}
+                      transition={spring}
+                      layout
+                    >
+                      <span>{file.name}</span>
+                      <motion.button
+                        type="button"
+                        onClick={() => removeFile(index)}
+                        aria-label={`Remove ${file.name}`}
+                        whileHover={{
+                          scale: 1.1,
+                          backgroundColor: "rgba(0,0,0,0.1)",
+                        }}
+                        whileTap={{ scale: 0.9 }}
+                      >
+                        ×
+                      </motion.button>
+                    </motion.div>
+                  ))}
                 </motion.div>
               )}
             </AnimatePresence>
             <motion.div className="input-row" layout>
               <label
                 className={`upload-label${isProcessing ? " disabled" : ""}`}
-                aria-label="Attach file"
+                aria-label="Attach files"
+                title="Attach files (Cmd/Ctrl+click for multiple)"
               >
                 📎
                 <input
@@ -806,6 +995,7 @@ export default function Home() {
                   accept="video/*,audio/*,image/*"
                   onChange={handleFileChange}
                   disabled={isProcessing}
+                  multiple
                 />
               </label>
               <textarea
@@ -831,7 +1021,7 @@ export default function Home() {
                 disabled={
                   isCheckingKey ||
                   !prompt.trim() ||
-                  !file ||
+                  files.length === 0 ||
                   !canSubmit ||
                   isProcessing
                 }
