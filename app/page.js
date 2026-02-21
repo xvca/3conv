@@ -2,6 +2,7 @@
 
 import { useState, useRef, useEffect } from "react";
 import axios from "axios";
+import { fetchFile } from "@ffmpeg/util";
 import { motion, AnimatePresence, LayoutGroup } from "framer-motion";
 import "./globals.css";
 
@@ -353,17 +354,14 @@ export default function Home() {
         setProgress(Math.round(progress * 100));
       });
 
-      const baseURL = "https://unpkg.com/@ffmpeg/core@0.12.10/dist/umd";
-      const coreURL = await toBlobURL(
-        `${baseURL}/ffmpeg-core.js`,
-        "text/javascript",
-      );
-      const wasmURL = await toBlobURL(
-        `${baseURL}/ffmpeg-core.wasm`,
-        "application/wasm",
-      );
+      const baseURL = "https://unpkg.com/@ffmpeg/core-mt@0.12.10/dist/umd";
+      const [coreURL, wasmURL, workerURL] = await Promise.all([
+        toBlobURL(`${baseURL}/ffmpeg-core.js`, "text/javascript"),
+        toBlobURL(`${baseURL}/ffmpeg-core.wasm`, "application/wasm"),
+        toBlobURL(`${baseURL}/ffmpeg-core.worker.js`, "text/javascript"),
+      ]);
 
-      await ffmpeg.load({ coreURL, wasmURL });
+      await ffmpeg.load({ coreURL, wasmURL, workerURL });
       console.log("[FFmpeg] Loaded successfully");
       setFfmpegLoaded(true);
     } catch (err) {
@@ -407,8 +405,6 @@ export default function Home() {
   };
 
   const processFiles = async (commandObj) => {
-    const { fetchFile } = await import("@ffmpeg/util");
-
     ffmpegLogsRef.current = [];
 
     const ffmpeg = ffmpegRef.current;
@@ -443,9 +439,6 @@ export default function Home() {
     console.log("[Process] Output file:", outputName);
     console.log("[Process] Command args:", commandObj.args);
 
-    const filesBefore = await ffmpeg.listDir("/");
-    console.log("[Process] Files before exec:", filesBefore);
-
     let args = commandObj.args;
     if (files.length === 1) {
       const inputExt = getFileExtension(files[0].name);
@@ -473,9 +466,6 @@ export default function Home() {
         friendlyError || "Conversion failed. Check console for details.",
       );
     }
-
-    const filesAfter = await ffmpeg.listDir("/");
-    console.log("[Process] Files after exec:", filesAfter);
 
     console.log("[Process] Reading output file:", outputName);
     let data;
@@ -555,12 +545,12 @@ export default function Home() {
     e.preventDefault();
     if (!prompt.trim() || files.length === 0 || !canSubmit || isProcessing) return;
 
+    setProgress(0);
     setIsProcessing(true);
     setDownloadUrl(null);
     setDownloadName(null);
     setCommand(null);
     setCost(null);
-    setProgress(0);
 
     const maxAttempts = 3;
     let lastError = null;
@@ -586,6 +576,9 @@ export default function Home() {
           if (outputBlob.size === 0) {
             throw new Error("Output file is empty - FFmpeg may have failed");
           }
+
+          setProgress(100);
+          await new Promise(resolve => setTimeout(resolve, 350));
 
           const outputUrl = URL.createObjectURL(outputBlob);
           setDownloadUrl(outputUrl);
