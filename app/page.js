@@ -2,42 +2,13 @@
 
 import { useState, useRef, useEffect } from "react";
 import axios from "axios";
-import { fetchFile } from "@ffmpeg/util";
+import { FFmpegEngine } from "../lib/ffmpeg-engine.mjs";
+import { SUPPORTED_FORMATS, getFileExtension, getExecutionArgs } from "../lib/conversion.mjs";
+import { MODELS, DEFAULT_EFFORT } from "../lib/models.mjs";
+import { usePreferences, setPreferences } from "../lib/preferences.mjs";
+import { generateClientCommand } from "../lib/generation.mjs";
 import { motion, AnimatePresence, LayoutGroup } from "framer-motion";
-import "./globals.css";
-
-const MODELS = [
-  { id: "google/gemini-3-flash-preview", name: "Gemeni 3 Flash Preview" },
-  { id: "anthropic/claude-sonnet-4.5", name: "Claude Sonnet 4.5" },
-  { id: "deepseek/deepseek-v3.2", name: "DeepSeek v3.2" },
-  { id: "z-ai/glm-4.7-flash", name: "Z.AI: GLM 4.7 Flash" },
-  { id: "x-ai/grok-code-fast-1", name: "xAI: Grok Code Fast 1" },
-];
-
-const SUPPORTED_FORMATS = {
-  video: [
-    "mp4",
-    "webm",
-    "avi",
-    "mov",
-    "mkv",
-    "flv",
-    "wmv",
-    "m4v",
-    "mpeg",
-    "mpg",
-    "3gp",
-    "ogv",
-  ],
-  audio: ["mp3", "wav", "ogg", "flac", "aac", "m4a", "wma", "opus"],
-  image: ["gif", "png", "jpg", "jpeg", "webp", "bmp", "tiff"],
-};
-
-const ALL_SUPPORTED = [
-  ...SUPPORTED_FORMATS.video,
-  ...SUPPORTED_FORMATS.audio,
-  ...SUPPORTED_FORMATS.image,
-];
+import CommandDetails from "./components/CommandDetails";
 
 function getFileType(ext) {
   if (SUPPORTED_FORMATS.video.includes(ext)) return "video";
@@ -50,6 +21,9 @@ function parseFFmpegError(errorMessage, logs) {
   const msg = errorMessage?.toLowerCase() || "";
   const logText = logs.join("\n").toLowerCase();
 
+  if (logText.includes("no font filename") || logText.includes("could not load font")) {
+    return "The text-overlay font could not be read. See conversion details below.";
+  }
   if (logText.includes("no such file") || logText.includes("does not exist")) {
     return "Input file could not be read. The file may be corrupted.";
   }
@@ -62,23 +36,26 @@ function parseFFmpegError(errorMessage, logs) {
   if (logText.includes("decoder") && logText.includes("not found")) {
     return "This file uses a codec that isn't supported. Try converting to a different format first.";
   }
-  if (logText.includes("encoder") && logText.includes("not found")) {
+  if (logText.includes("unknown encoder") || (logText.includes("encoder") && logText.includes("not found"))) {
     return "The requested output format isn't supported. Try a different output format.";
   }
   if (logText.includes("codec not currently supported")) {
     return "This file uses a codec that isn't available in the browser. Try a different file.";
+  }
+  if (logText.includes("no such filter") || logText.includes("error initializing complex filters")) {
+    return "The generated filter isn't supported or is invalid. Try rephrasing the request or choosing another model.";
   }
   if (logText.includes("permission denied")) {
     return "Browser permission error. Try refreshing the page.";
   }
   if (
     logText.includes("out of memory") ||
-    logText.includes("memory allocation")
+    logText.includes("memory allocation") || msg.includes("out of memory") || msg.includes("memory access out of bounds")
   ) {
     return "File too large for browser memory. Try a smaller file or compress it first.";
   }
   if (msg.includes("exit code")) {
-    return "Conversion failed. The file may be corrupted or use an unsupported codec.";
+    return "Conversion failed. See conversion details below for FFmpeg's error.";
   }
 
   return null;
@@ -131,54 +108,58 @@ const EXAMPLE_PROMPTS = [
 
 export default function Home() {
   const [apiKey, setApiKey] = useState("");
-  const [model, setModel] = useState(MODELS[0].id);
+  const { model, reasoningEffort, ready: settingsLoaded } = usePreferences();
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [files, setFiles] = useState([]);
   const [prompt, setPrompt] = useState("");
   const [status, setStatus] = useState(null);
   const [statusType, setStatusType] = useState("normal");
+  const [errorDetails, setErrorDetails] = useState(null);
   const [progress, setProgress] = useState(0);
   const [downloadUrl, setDownloadUrl] = useState(null);
   const [downloadName, setDownloadName] = useState(null);
   const [command, setCommand] = useState(null);
   const [cost, setCost] = useState(null);
-  const [ffmpegLoaded, setFfmpegLoaded] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
   const [hasServerKey, setHasServerKey] = useState(null);
   const [placeholderIndex, setPlaceholderIndex] = useState(0);
   const [placeholderFading, setPlaceholderFading] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
 
-  const ffmpegRef = useRef(null);
-  const ffmpegLogsRef = useRef([]);
+  const engineRef = useRef(null);
+  const jobRef = useRef(null);
   const textareaRef = useRef(null);
   const settingsRef = useRef(null);
 
   useEffect(() => {
-    const savedKey = localStorage.getItem("openrouter_api_key") || "";
-    const savedModel = localStorage.getItem("openrouter_model") || MODELS[0].id;
-    setApiKey(savedKey);
-    setModel(savedModel);
+    try {
+      // Retire keys persisted by older versions; don't restore them into this session.
+      localStorage.removeItem("openrouter_api_key");
+    } catch { /* Storage can be unavailable in private/restricted browsing. */ }
 
     axios
-      .get("/api/status")
+      .get("/api/status", { timeout: 10000 })
       .then((res) => setHasServerKey(res.data.hasServerKey))
       .catch(() => setHasServerKey(false));
   }, []);
 
   useEffect(() => {
-    if (apiKey) {
-      localStorage.setItem("openrouter_api_key", apiKey);
-    }
-  }, [apiKey]);
-
-  useEffect(() => {
-    localStorage.setItem("openrouter_model", model);
-  }, [model]);
-
-  useEffect(() => {
-    loadFFmpeg();
+    const engine = new FFmpegEngine({ onProgress: setProgress });
+    engineRef.current = engine;
+    return () => {
+      jobRef.current?.abort();
+      engine.reset();
+    };
   }, []);
+
+  useEffect(() => {
+    // Warm up while the user types, without blocking the UI on the WASM download.
+    if (files.length) engineRef.current.load().catch(() => {});
+  }, [files.length]);
+
+  useEffect(() => {
+    return () => { if (downloadUrl) URL.revokeObjectURL(downloadUrl); };
+  }, [downloadUrl]);
 
   useEffect(() => {
     if (!settingsOpen) return;
@@ -205,21 +186,22 @@ export default function Home() {
   }, [settingsOpen]);
 
   useEffect(() => {
+    let timeout;
     const interval = setInterval(() => {
       setPlaceholderFading(true);
 
-      setTimeout(() => {
+      timeout = setTimeout(() => {
         setPlaceholderIndex((prev) => (prev + 1) % EXAMPLE_PROMPTS.length);
         setPlaceholderFading(false);
       }, 500);
     }, 3000);
 
-    return () => clearInterval(interval);
+    return () => { clearInterval(interval); clearTimeout(timeout); };
   }, []);
 
   useEffect(() => {
     const handlePaste = (e) => {
-      if (isProcessing) return;
+      if (jobRef.current) return;
 
       const items = e.clipboardData?.items;
       if (!items) return;
@@ -287,7 +269,7 @@ export default function Home() {
       e.stopPropagation();
       setIsDragging(false);
 
-      if (isProcessing) return;
+      if (jobRef.current) return;
 
       const droppedFiles = Array.from(e.dataTransfer?.files || []);
       if (droppedFiles.length === 0) return;
@@ -331,182 +313,27 @@ export default function Home() {
     };
   }, [isProcessing, isDragging]);
 
-  const loadFFmpeg = async () => {
-    try {
-      console.log("[FFmpeg] Loading...");
-
-      const { FFmpeg } = await import("@ffmpeg/ffmpeg");
-      const { toBlobURL } = await import("@ffmpeg/util");
-
-      const ffmpeg = new FFmpeg();
-      ffmpegRef.current = ffmpeg;
-
-      ffmpeg.on("log", ({ message }) => {
-        console.log("[FFmpeg]", message);
-        ffmpegLogsRef.current.push(message);
-        if (ffmpegLogsRef.current.length > 100) {
-          ffmpegLogsRef.current.shift();
-        }
-      });
-
-      ffmpeg.on("progress", ({ progress, time }) => {
-        console.log("[FFmpeg Progress]", { progress, time });
-        setProgress(Math.round(progress * 100));
-      });
-
-      const baseURL = "https://unpkg.com/@ffmpeg/core-mt@0.12.10/dist/umd";
-      const [coreURL, wasmURL, workerURL] = await Promise.all([
-        toBlobURL(`${baseURL}/ffmpeg-core.js`, "text/javascript"),
-        toBlobURL(`${baseURL}/ffmpeg-core.wasm`, "application/wasm"),
-        toBlobURL(`${baseURL}/ffmpeg-core.worker.js`, "text/javascript"),
-      ]);
-
-      await ffmpeg.load({ coreURL, wasmURL, workerURL });
-      console.log("[FFmpeg] Loaded successfully");
-      setFfmpegLoaded(true);
-    } catch (err) {
-      console.error("[FFmpeg] Failed to load:", err);
-      setStatus("Failed to load FFmpeg");
-      setStatusType("error");
-    }
-  };
-
-  const getFileExtension = (filename) => {
-    return filename.split(".").pop().toLowerCase();
-  };
-
-  const generateCommand = async (userPrompt, filenames) => {
-    console.log("[API] Generating command for:", {
-      userPrompt,
+  const generateCommand = async (userPrompt, filenames, signal) => {
+    const data = await generateClientCommand({
+      prompt: userPrompt,
       filenames,
       model,
-    });
-
-    try {
-      const { data } = await axios.post("/api/generate", {
-        prompt: userPrompt,
-        filenames,
-        model,
-        apiKey: apiKey || undefined,
-      });
-
-      console.log("[API] Response:", data);
-
-      if (data.cost !== undefined) {
-        setCost(data.cost);
-      }
-
-      return data.command;
-    } catch (err) {
-      const message = err.response?.data?.error || "Failed to generate command";
-      console.log({ error: err.response?.data, status: err.response?.status });
-      throw new Error(message);
-    }
+      reasoningEffort,
+    }, { apiKey, signal });
+    if (typeof data.cost === "number" && Number.isFinite(data.cost)) setCost(data.cost);
+    return data.command;
   };
 
-  const processFiles = async (commandObj) => {
-    ffmpegLogsRef.current = [];
-
-    const ffmpeg = ffmpegRef.current;
-    const outputName = `output.${commandObj.outputExt}`;
-
-    const inputNames = [];
-    for (let i = 0; i < files.length; i++) {
-      const file = files[i];
-      const inputExt = getFileExtension(file.name);
-
-      if (!ALL_SUPPORTED.includes(inputExt)) {
-        throw new Error(
-          `Unsupported file format: .${inputExt}. Supported formats: ${ALL_SUPPORTED.join(", ")}`,
-        );
-      }
-
-      const inputName = files.length === 1 ? `input.${inputExt}` : `input${i}.${inputExt}`;
-      inputNames.push(inputName);
-
-      console.log(`[Process] Input file ${i}:`, inputName);
-
-      const fileData = await fetchFile(file);
-      console.log(`[Process] Input file ${i} size:`, fileData.byteLength, "bytes");
-
-      if (fileData.byteLength === 0) {
-        throw new Error(`File ${file.name} is empty. Please select valid files.`);
-      }
-
-      await ffmpeg.writeFile(inputName, fileData);
-    }
-
-    console.log("[Process] Output file:", outputName);
-    console.log("[Process] Command args:", commandObj.args);
-
-    let args = commandObj.args;
-    if (files.length === 1) {
-      const inputExt = getFileExtension(files[0].name);
-      const inputName = `input.${inputExt}`;
-      args = args.map((arg) => {
-        if (arg.match(/input\.[a-zA-Z0-9]+/)) {
-          return arg.replace(/input\.[a-zA-Z0-9]+/, inputName);
-        }
-        return arg;
-      });
-    }
-    console.log("[Process] Final args:", args);
-
-    console.log("[Process] Executing FFmpeg...");
+  const processFiles = async (jobFiles, commandObj) => {
     try {
-      await ffmpeg.exec(args);
-      console.log("[Process] FFmpeg exec completed");
-    } catch (err) {
-      console.error("[Process] FFmpeg exec error:", err);
-      const friendlyError = parseFFmpegError(
-        err.message,
-        ffmpegLogsRef.current,
-      );
-      throw new Error(
-        friendlyError || "Conversion failed. Check console for details.",
-      );
+      const data = await engineRef.current.run(jobFiles, commandObj);
+      return new Blob([data], { type: getMimeType(commandObj.outputExt) });
+    } catch (error) {
+      const message = error?.message || String(error);
+      const logs = engineRef.current.logs;
+      setErrorDetails(logs.length ? logs.join("\n").slice(-8000) : message);
+      throw new Error(parseFFmpegError(message, logs) || message);
     }
-
-    console.log("[Process] Reading output file:", outputName);
-    let data;
-    try {
-      data = await ffmpeg.readFile(outputName);
-      console.log(
-        "[Process] Output data type:",
-        typeof data,
-        data.constructor.name,
-      );
-      console.log(
-        "[Process] Output data length:",
-        data.length || data.byteLength,
-        "bytes",
-      );
-    } catch (err) {
-      console.error("[Process] Failed to read output file:", err);
-      const friendlyError = parseFFmpegError(
-        err.message,
-        ffmpegLogsRef.current,
-      );
-      throw new Error(
-        friendlyError ||
-          "Conversion produced no output. The file may use an unsupported codec.",
-      );
-    }
-
-    try {
-      for (const inputName of inputNames) {
-        await ffmpeg.deleteFile(inputName);
-      }
-      await ffmpeg.deleteFile(outputName);
-      console.log("[Process] Cleanup complete");
-    } catch (err) {
-      console.warn("[Process] Cleanup warning:", err);
-    }
-
-    const blob = new Blob([data], { type: getMimeType(commandObj.outputExt) });
-    console.log("[Process] Blob size:", blob.size, "bytes");
-
-    return blob;
   };
 
   const getMimeType = (ext) => {
@@ -520,6 +347,13 @@ export default function Home() {
       mp3: "audio/mpeg",
       wav: "audio/wav",
       ogg: "audio/ogg",
+      flac: "audio/flac",
+      aac: "audio/aac",
+      m4a: "audio/mp4",
+      opus: "audio/ogg",
+      webp: "image/webp",
+      bmp: "image/bmp",
+      tiff: "image/tiff",
       png: "image/png",
       jpg: "image/jpeg",
       jpeg: "image/jpeg",
@@ -538,78 +372,66 @@ export default function Home() {
     return `${baseName}.${outputExt}`;
   };
 
-  const canSubmit = apiKey || hasServerKey === true;
-  const isCheckingKey = hasServerKey === null;
+  const canSubmit = !!apiKey.trim() || hasServerKey === true;
+  const isCheckingKey = !settingsLoaded || (hasServerKey === null && !apiKey.trim());
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    if (!prompt.trim() || files.length === 0 || !canSubmit || isProcessing) return;
+    if (!prompt.trim() || files.length === 0 || !canSubmit || jobRef.current) return;
+    if (files.length > 20 || files.some((file) => file.size === 0)) {
+      setStatus("Select 1–20 non-empty media files.");
+      setStatusType("error");
+      return;
+    }
+    const controller = new AbortController();
+    jobRef.current = controller;
+    const jobFiles = [...files];
 
     setProgress(0);
+    setErrorDetails(null);
     setIsProcessing(true);
     setDownloadUrl(null);
     setDownloadName(null);
     setCommand(null);
     setCost(null);
 
-    const maxAttempts = 3;
-    let lastError = null;
-    let success = false;
-
     try {
-      for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-        try {
-          setStatus(
-            attempt === 1
-              ? "Generating command..."
-              : `Retrying (${attempt}/${maxAttempts})...`
-          );
-          setStatusType("pulse");
-
-          const filenames = files.map(f => f.name);
-          const commandObj = await generateCommand(prompt, filenames);
-          setCommand(`ffmpeg ${commandObj.args.join(" ")}`);
-
-          setStatus(files.length > 1 ? "Processing files..." : "Processing file...");
-          const outputBlob = await processFiles(commandObj);
-
-          if (outputBlob.size === 0) {
-            throw new Error("Output file is empty - FFmpeg may have failed");
-          }
-
-          setProgress(100);
-          await new Promise(resolve => setTimeout(resolve, 350));
-
-          const outputUrl = URL.createObjectURL(outputBlob);
-          setDownloadUrl(outputUrl);
-          setDownloadName(
-            getOutputFilename(files[0].name, commandObj.outputExt, commandObj.suffix),
-          );
-          setStatus("Done!");
-          setStatusType("success");
-          success = true;
-          break;
-        } catch (error) {
-          console.error(`[Error] Attempt ${attempt}/${maxAttempts}:`, error);
-          lastError = error;
-
-          if (attempt < maxAttempts) {
-            await new Promise(resolve => setTimeout(resolve, 500));
-          }
-        }
-      }
-
-      if (!success && lastError) {
-        setStatus(`Error: ${lastError.message}`);
-        setStatusType("error");
-      }
+      setStatus("Preparing engine and generating command...");
+      setStatusType("pulse");
+      const [commandObj] = await Promise.all([
+        generateCommand(prompt, jobFiles.map((file) => file.name), controller.signal),
+        engineRef.current.load(),
+      ]);
+      controller.signal.throwIfAborted();
+      setCommand(`ffmpeg ${getExecutionArgs(commandObj.args).join(" ")}`);
+      setStatus(jobFiles.length > 1 ? "Processing files..." : "Processing file...");
+      const outputBlob = await processFiles(jobFiles, commandObj);
+      controller.signal.throwIfAborted();
+      setDownloadUrl(URL.createObjectURL(outputBlob));
+      setDownloadName(getOutputFilename(jobFiles[0].name, commandObj.outputExt, commandObj.suffix));
+      setProgress(100);
+      setStatus("Done!");
+      setStatusType("success");
+    } catch (error) {
+      const wasCancelled = controller.signal.aborted;
+      controller.abort();
+      engineRef.current.reset();
+      setStatus(wasCancelled ? "Cancelled." : `Error: ${error?.message || String(error)}`);
+      setStatusType(wasCancelled ? "normal" : "error");
     } finally {
+      jobRef.current = null;
       setIsProcessing(false);
       setProgress(0);
     }
   };
 
+  const cancelConversion = () => {
+    jobRef.current?.abort();
+    engineRef.current.reset();
+  };
+
   const handleFileChange = (e) => {
+    if (jobRef.current) return;
     const selectedFiles = Array.from(e.target.files || []);
     if (selectedFiles.length === 0) return;
 
@@ -648,6 +470,7 @@ export default function Home() {
   };
 
   const removeFile = (index) => {
+    if (jobRef.current) return;
     setFiles(files.filter((_, i) => i !== index));
     setDownloadUrl(null);
     setDownloadName(null);
@@ -665,36 +488,11 @@ export default function Home() {
   const handleKeyDown = (e) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
-      if (prompt.trim() && files.length > 0 && canSubmit && ffmpegLoaded && !isProcessing) {
+      if (prompt.trim() && files.length > 0 && canSubmit && !jobRef.current) {
         handleSubmit(e);
       }
     }
   };
-
-  if (!ffmpegLoaded) {
-    return (
-      <div className="app">
-        <div className="main-content">
-          <motion.div
-            className="title"
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.5, ease: [0.33, 1, 0.68, 1] }}
-          >
-            <h1>3conv</h1>
-            <p className="status">
-              Loading
-              <span className="loading-dots">
-                <span></span>
-                <span></span>
-                <span></span>
-              </span>
-            </p>
-          </motion.div>
-        </div>
-      </div>
-    );
-  }
 
   return (
     <div className="app">
@@ -726,7 +524,7 @@ export default function Home() {
             onClick={() => setSettingsOpen(!settingsOpen)}
             aria-label="Settings"
             aria-expanded={settingsOpen}
-            aria-haspopup="true"
+            aria-controls="settings-dropdown"
             whileHover={{ scale: 1.05 }}
             whileTap={{ scale: 0.95 }}
           >
@@ -745,8 +543,9 @@ export default function Home() {
                   transition={{ duration: 0.15 }}
                 />
                 <motion.form
+                  id="settings-dropdown"
                   className="settings-dropdown"
-                  role="menu"
+                  aria-label="Settings"
                   onSubmit={(e) => e.preventDefault()}
                   autoComplete="off"
                   variants={slideDown}
@@ -755,30 +554,27 @@ export default function Home() {
                   exit="exit"
                   transition={spring}
                 >
-                  <label htmlFor="api-key-input">OpenRouter API Key</label>
+                  <div className="settings-label-row">
+                    <label htmlFor="api-key-input">OpenRouter key</label>
+                    <a
+                      href="https://openrouter.ai/keys"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      title="Create a separate key with a spending limit"
+                    >Get key ↗</a>
+                  </div>
                   <input
                     id="api-key-input"
                     type="password"
                     value={apiKey}
                     onChange={(e) => setApiKey(e.target.value)}
-                    placeholder={
-                      hasServerKey ? "(using free credits)" : "sk-or-..."
-                    }
+                    placeholder={hasServerKey ? "Optional — free credits available" : "sk-or-..."}
                     autoComplete="off"
+                    autoCapitalize="none"
+                    spellCheck={false}
+                    aria-describedby="key-privacy-note"
                   />
-                  <small>
-                    {hasServerKey
-                      ? "Optional. Free credits reset daily."
-                      : "Required. Stored locally in browser."}{" "}
-                    <a
-                      href="https://openrouter.ai/keys"
-                      target="_blank"
-                      rel="noopener noreferrer"
-                    >
-                      Get your own key
-                    </a>{" "}
-                    for unlimited use.
-                  </small>
+                  <small id="key-privacy-note">Not saved. Sent only to OpenRouter.</small>
 
                   <label htmlFor="model-select" style={{ marginTop: "1rem" }}>
                     Model
@@ -786,11 +582,30 @@ export default function Home() {
                   <select
                     id="model-select"
                     value={model}
-                    onChange={(e) => setModel(e.target.value)}
+                    onChange={(e) => {
+                      const selected = MODELS.find((entry) => entry.id === e.target.value);
+                      setPreferences({
+                        model: selected.id,
+                        reasoningEffort: selected.efforts.includes(reasoningEffort) ? reasoningEffort : DEFAULT_EFFORT,
+                      });
+                    }}
                   >
                     {MODELS.map((m) => (
                       <option key={m.id} value={m.id}>
-                        {m.name}
+                        {m.name} · ${m.outputPrice}/M out
+                      </option>
+                    ))}
+                  </select>
+
+                  <label htmlFor="reasoning-effort" style={{ marginTop: "1rem" }}>Reasoning</label>
+                  <select
+                    id="reasoning-effort"
+                    value={reasoningEffort}
+                    onChange={(e) => setPreferences({ model, reasoningEffort: e.target.value })}
+                  >
+                    {MODELS.find((entry) => entry.id === model).efforts.map((effort) => (
+                      <option key={effort} value={effort}>
+                        {{ low: "Low", medium: "Medium", high: "High" }[effort]}
                       </option>
                     ))}
                   </select>
@@ -820,13 +635,16 @@ export default function Home() {
                   exit={{ opacity: 0, height: 0 }}
                   transition={smooth}
                 >
-                  Free credits available daily
+                  Free credits available
                 </motion.p>
               )}
             </AnimatePresence>
           </motion.div>
 
-          <motion.div className="status-area" layout transition={smooth}>
+          <motion.div className="status-area">
+            {isProcessing && (
+              <button type="button" className="cancel-btn" onClick={cancelConversion}>Cancel conversion</button>
+            )}
             <AnimatePresence mode="wait">
               {status && (
                 <motion.div
@@ -843,6 +661,13 @@ export default function Home() {
                 </motion.div>
               )}
             </AnimatePresence>
+
+            {status && statusType === "error" && errorDetails && (
+              <details className="error-details">
+                <summary>Conversion details</summary>
+                <pre>{errorDetails}</pre>
+              </details>
+            )}
 
             <AnimatePresence>
               {isProcessing && progress > 0 && (
@@ -867,18 +692,14 @@ export default function Home() {
             <AnimatePresence>
               {command && (
                 <motion.div
-                  className="command-area"
-                  variants={fadeInUp}
-                  initial="initial"
-                  animate="animate"
-                  exit="exit"
+                  key={command}
+                  className="command-presence"
+                  initial={{ opacity: 0, height: 0 }}
+                  animate={{ opacity: 1, height: "auto" }}
+                  exit={{ opacity: 0, height: 0 }}
                   transition={smooth}
-                  layout
                 >
-                  <div className="command">{command}</div>
-                  {cost !== null && (
-                    <div className="cost">${cost.toFixed(6)}</div>
-                  )}
+                  <CommandDetails command={command} cost={cost} />
                 </motion.div>
               )}
             </AnimatePresence>
@@ -892,7 +713,7 @@ export default function Home() {
                   animate="animate"
                   exit="exit"
                   transition={{ ...spring, staggerChildren: 0.1 }}
-                  layout
+                  layout="position"
                 >
                   <motion.div
                     className="preview-container"
@@ -903,12 +724,13 @@ export default function Home() {
                     {downloadName?.match(/\.(mp4|webm|mov|avi|mkv)$/i) ? (
                       <video src={downloadUrl} className="preview" controls />
                     ) : downloadName?.match(/\.(gif|png|jpg|jpeg|webp)$/i) ? (
+                      // eslint-disable-next-line @next/next/no-img-element -- Local blob preview: no server optimization or upload.
                       <img
                         src={downloadUrl}
                         className="preview"
                         alt="Output preview"
                       />
-                    ) : downloadName?.match(/\.(mp3|wav|ogg|aac)$/i) ? (
+                    ) : downloadName?.match(/\.(mp3|wav|ogg|aac|m4a|flac|opus)$/i) ? (
                       <audio src={downloadUrl} controls />
                     ) : null}
                   </motion.div>
@@ -936,7 +758,7 @@ export default function Home() {
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ delay: 0.2, duration: 0.5, ease: [0.33, 1, 0.68, 1] }}
-            layout
+            layout="position"
           >
             <AnimatePresence>
               {files.length > 0 && (
@@ -962,6 +784,7 @@ export default function Home() {
                       <motion.button
                         type="button"
                         onClick={() => removeFile(index)}
+                        disabled={isProcessing}
                         aria-label={`Remove ${file.name}`}
                         whileHover={{
                           scale: 1.1,
@@ -1005,6 +828,7 @@ export default function Home() {
                       : EXAMPLE_PROMPTS[placeholderIndex]
                 }
                 rows={1}
+                maxLength={4000}
                 disabled={isCheckingKey || !canSubmit || isProcessing}
                 aria-label="Conversion instruction"
               />

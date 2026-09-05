@@ -1,6 +1,9 @@
 # Dependencies
 node_modules
 
+# Generated FFmpeg assets (copied before dev/build)
+public/ffmpeg/
+
 # Next.js
 .next
 out

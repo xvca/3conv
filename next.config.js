@@ -4,6 +4,10 @@ const nextConfig = {
   async headers() {
     return [
       {
+        source: '/ffmpeg/0.12.10/:path*',
+        headers: [{ key: 'Cache-Control', value: 'public, max-age=31536000, immutable' }],
+      },
+      {
         source: '/(.*)',
         headers: [
           {
@@ -20,4 +24,4 @@ const nextConfig = {
   },
 }
 
-module.exports = nextConfig
+export default nextConfig

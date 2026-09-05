@@ -1,20 +1,35 @@
 {
   "name": "3conv",
   "private": true,
+  "type": "module",
   "version": "0.0.0",
+  "engines": {
+    "node": "24.x"
+  },
   "scripts": {
+    "predev": "node scripts/copy-ffmpeg.mjs",
     "dev": "next dev",
+    "prebuild": "node scripts/copy-ffmpeg.mjs",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "eslint . --max-warnings=0",
+    "test": "node --test tests/*.test.mjs"
   },
   "dependencies": {
-    "@ffmpeg/ffmpeg": "^0.12.15",
-    "@ffmpeg/util": "^0.12.2",
-    "axios": "^1.13.3",
-    "framer-motion": "^12.29.2",
-    "next": "^16.1.5",
-    "react": "^19.2.4",
-    "react-dom": "^19.2.4"
+    "@ffmpeg/core": "0.12.10",
+    "@ffmpeg/core-mt": "0.12.10",
+    "@ffmpeg/ffmpeg": "0.12.15",
+    "@fontsource-variable/source-serif-4": "5.3.0",
+    "axios": "^1.20.0",
+    "dejavu-fonts-ttf": "2.37.3",
+    "framer-motion": "^12.43.0",
+    "next": "^16.3.4",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.5",
+    "eslint": "^9.39.5",
+    "eslint-config-next": "^16.3.4"
   }
 }
